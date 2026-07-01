@@ -1,0 +1,36 @@
+# release-plz — automated versioning, changelog, and crates.io publishing.
+# Docs: https://release-plz.dev/docs/config
+#
+# All three crates share one version (`version.workspace = true` in Cargo.toml).
+# `version_group` keeps them bumped and released together; `protonmail-cli` is
+# the headline package that aggregates every crate's commits into the single
+# root CHANGELOG.md and owns the one `vX.Y.Z` git tag + GitHub release. All three
+# are still published to crates.io (release-plz resolves the dependency order:
+# proton-core first, then protonmail-cli / proton-mcp).
+
+[workspace]
+# Per-crate git tags/releases off by default; the headline package enables one.
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "proton-core"
+version_group = "protonmail-rs"
+# Commits are aggregated into the root changelog by protonmail-cli below.
+changelog_update = false
+
+[[package]]
+name = "proton-mcp"
+version_group = "protonmail-rs"
+changelog_update = false
+
+[[package]]
+name = "protonmail-cli"
+version_group = "protonmail-rs"
+# Single combined changelog at the repo root, including the other two crates.
+changelog_path = "./CHANGELOG.md"
+changelog_include = ["proton-core", "proton-mcp"]
+# One workspace-wide tag + release, e.g. `v0.1.0`.
+git_tag_enable = true
+git_tag_name = "v{{ version }}"
+git_release_enable = true

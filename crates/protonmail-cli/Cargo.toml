@@ -1,0 +1,28 @@
+[package]
+name = "protonmail-cli"
+description = "Unofficial command-line client for Proton Mail (login, read/send with end-to-end OpenPGP, drafts, filters, contacts, local encrypted search), built on proton-core."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories = ["email", "command-line-utilities"]
+
+[[bin]]
+name = "protonmail-cli"
+path = "src/main.rs"
+
+[dependencies]
+proton-core = { path = "../proton-core", version = "0.1.0" }
+clap.workspace = true
+serde.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+rpassword = "7"
