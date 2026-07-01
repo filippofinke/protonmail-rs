@@ -19,9 +19,9 @@ unlock, **send** (E2E), **list**, **read + decrypt + signature verify** all work
 
 | Crate (crates.io) | Binary | Role |
 |---|---|---|
-| `proton-core` | — | The SDK — transport, auth, crypto, models, API, mail services |
-| `protonmail-cli` | `protonmail-cli` | Command-line front-end (clap) |
-| `proton-mcp` | `proton-mcp` | MCP server exposing mail tools to LLM agents (rmcp) |
+| [`proton-core`](https://crates.io/crates/proton-core) | — | The SDK — transport, auth, crypto, models, API, mail services |
+| [`protonmail-cli`](https://crates.io/crates/protonmail-cli) | `protonmail-cli` | Command-line front-end (clap) |
+| [`proton-mcp`](https://crates.io/crates/proton-mcp) | `proton-mcp` | MCP server exposing mail tools to LLM agents (rmcp) |
 
 Requires Rust **≥ 1.96**.
 
