@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/filippofinke/protonmail-rs/compare/v0.1.0...v0.1.1) - 2026-07-01
+
+### Other
+
+- link crates.io pages in README workspace table
+
 ## [0.1.0] - 2026-06-30
 
 Initial release. Unofficial, pure-Rust Proton Mail client.
