@@ -17,7 +17,7 @@ name = "proton-mcp"
 path = "src/main.rs"
 
 [dependencies]
-proton-core = { path = "../proton-core", version = "0.1.0" }
+proton-core = { path = "../proton-core", version = "0.1.1" }
 rmcp = { workspace = true, features = ["transport-streamable-http-server"] }
 schemars.workspace = true
 serde.workspace = true
