@@ -40,14 +40,14 @@ cargo build --release             # -> target/release/{protonmail-cli, proton-mc
 
 ### Authentication
 - **SRP login** (SRP-6a) via `proton-srp` — server-signed modulus verified, client/server proof exchange, hash versions V0–V4.
-- **Two-factor (TOTP)**.
+- **Two-factor (TOTP)** — the CLI prompts for the code only when required; SDK callers can use `Client::login_with_totp_prompt`.
 - **Two-password accounts** — reads `PasswordMode`; separate mailbox password supported.
 - **Human verification / CAPTCHA** — pluggable resolver on API code 9001 (retries with `x-pm-human-verification-token`).
 - **Session persistence** — per-profile, multi-profile; non-secret metadata on disk (0600), secrets (tokens + key passphrase) in the **OS keychain** (`keyring`).
 - **Session resume** — re-open + unlock keys from a saved session without re-entering the password.
 - **Token refresh** — automatic on 401 (rotating tokens persisted), single retry.
 - **Logout** — server-side session revoke + local clear.
-- **Client masquerade** — configurable `x-pm-appversion` + `User-Agent` (web/iOS/Android presets).
+- **Client masquerade** — configurable `x-pm-appversion` + `User-Agent` (web/iOS/Android presets); otherwise the CLI sends `User-Agent: protonmail-cli/<version> (<os>)`.
 
 ### Cryptography (pure Rust, no cgo)
 - **Key hierarchy unlock** — user keys (bcrypt mailbox-password KDF → key passphrase) and address keys (per-key token decrypted + **signature verified** against user keys; bad tokens skipped).
@@ -125,7 +125,8 @@ search         <query> [--limit 25]                                  # query the
 ```
 `<REF>` = exact message ID or free text (unique search match); `<ID>` = exact id. `--json` on any
 command for machine output. CAPTCHA: login auto-opens it; solve via console snippet / bookmarklet,
-or pass `--captcha-token`, or `--captcha-chrome` (isolated, auto-closing window).
+or pass `--captcha-token`, or `--captcha-chrome` (verify.proton.me in an isolated window; press
+Enter once verified and it closes).
 
 ---
 

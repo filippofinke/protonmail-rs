@@ -498,6 +498,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sends_app_version_and_user_agent() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/x"))
+            .and(wiremock::matchers::header("x-pm-appversion", "Other"))
+            .and(wiremock::matchers::header(
+                "user-agent",
+                "protonmail-cli/9.9.9 (testos)",
+            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"Code":1000,"Value":1})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let c = client(&server.uri());
+        c.set_user_agent("protonmail-cli/9.9.9 (testos)".into())
+            .await;
+        let v: ValueResp = c.decode(Request::get("/x")).await.unwrap();
+        assert_eq!(v.value, 1);
+    }
+
+    #[tokio::test]
     async fn retries_once_on_429() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))

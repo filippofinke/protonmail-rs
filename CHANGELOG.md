@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `Client::conversation_messages` lists the metadata of every message in a
+  conversation, oldest first, without fetching bodies or decrypting.
+
 ## [0.1.1](https://github.com/filippofinke/protonmail-rs/compare/v0.1.0...v0.1.1) - 2026-07-01
 
 ### Other

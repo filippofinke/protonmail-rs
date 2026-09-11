@@ -72,6 +72,7 @@ pub mod transport;
 pub use api::contacts::{Contact, ContactEmail};
 pub use api::events::LabelCount;
 pub use api::filters::Filter;
+pub use auth::TotpPrompt;
 pub use crypto::Verdict;
 pub use error::{ApiError, Error, HvChallenge, Result};
 pub use mail::contacts::AddressInfo;

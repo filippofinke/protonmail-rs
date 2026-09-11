@@ -32,7 +32,7 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub app_version: Option<String>,
 
-    /// TOTP two-factor code.
+    /// TOTP two-factor code (prompted for when required if omitted).
     #[arg(long, global = true, env = "PROTON_TOTP")]
     pub totp: Option<String>,
 
@@ -48,12 +48,12 @@ pub struct Cli {
     #[arg(long, global = true, value_enum)]
     pub client: Option<ClientPreset>,
 
-    /// Override the User-Agent header (login only).
+    /// Override the User-Agent header (login only; default `protonmail-cli/<version> (<os>)`).
     #[arg(long, global = true)]
     pub user_agent: Option<String>,
 
-    /// Open the CAPTCHA in an isolated Chrome window (throwaway profile) instead
-    /// of your default browser; it is closed automatically once verified.
+    /// Solve the CAPTCHA on verify.proton.me in an isolated Chrome window
+    /// (throwaway profile); press Enter once verified and the window is closed.
     #[arg(long, global = true)]
     pub captcha_chrome: bool,
 

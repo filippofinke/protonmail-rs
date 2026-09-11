@@ -11,7 +11,7 @@ pub mod send;
 pub mod sync;
 
 use crate::api;
-use crate::auth;
+use crate::auth::{self, TotpPrompt};
 use crate::crypto::{self, keys::KeyStore};
 use crate::error::{Error, Result};
 use crate::session::{KeyringStore, Paths, SecretStore, Session, Tokens};
@@ -72,6 +72,21 @@ impl Client {
 
     /// Interactive login: SRP + 2FA, unlock keys, persist session.
     pub async fn login(opts: LoginOptions) -> Result<Client> {
+        Self::login_inner(opts, None).await
+    }
+
+    /// Like [`Client::login`], but calls `totp_prompt` for the code when the
+    /// account requires TOTP and `opts.totp` is `None`. The prompt runs after
+    /// any human verification (so the code is fresh) and never runs for
+    /// accounts without TOTP.
+    pub async fn login_with_totp_prompt(
+        opts: LoginOptions,
+        totp_prompt: TotpPrompt,
+    ) -> Result<Client> {
+        Self::login_inner(opts, Some(totp_prompt)).await
+    }
+
+    async fn login_inner(opts: LoginOptions, totp_prompt: Option<TotpPrompt>) -> Result<Client> {
         let base_url = opts
             .base_url
             .clone()
@@ -90,7 +105,14 @@ impl Client {
         }
 
         let password = SecretString::from(opts.password.clone());
-        let login = auth::login(&http, &opts.username, &password, opts.totp.as_deref()).await?;
+        let login = auth::login_with_prompt(
+            &http,
+            &opts.username,
+            &password,
+            opts.totp.as_deref(),
+            totp_prompt.as_ref(),
+        )
+        .await?;
 
         let provider = crypto::provider();
         let salts = api::keys::get_key_salts(&http).await?;
@@ -198,5 +220,30 @@ impl Client {
         };
         self.sender_cache.lock().await.insert(key, pubs.clone());
         pubs
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `LoginOptions` keeps its upstream shape and both entry points accept it.
+    /// The futures are never polled, so nothing touches the network.
+    #[test]
+    fn login_entry_points_accept_upstream_login_options() {
+        let opts = || LoginOptions {
+            username: "user@example.com".into(),
+            password: "not-a-real-password".into(),
+            totp: None,
+            mailbox_password: None,
+            profile: "test".into(),
+            base_url: None,
+            app_version: None,
+            user_agent: None,
+            hv: None,
+        };
+        let prompt: TotpPrompt = Arc::new(|| Box::pin(async { Ok("000000".to_string()) }));
+        drop(Client::login(opts()));
+        drop(Client::login_with_totp_prompt(opts(), prompt));
     }
 }

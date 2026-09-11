@@ -216,6 +216,18 @@ impl Client {
         }
         Ok((conv, out))
     }
+
+    /// List the metadata of every message in a conversation (oldest first),
+    /// without fetching message bodies or decrypting anything.
+    pub async fn conversation_messages(&self, id: &str) -> Result<Vec<MessageMetadata>> {
+        let (_, messages) = api::conversations::get_conversation(self.http(), id).await?;
+        Ok(metadata_oldest_first(messages))
+    }
+}
+
+fn metadata_oldest_first(mut messages: Vec<Message>) -> Vec<MessageMetadata> {
+    messages.sort_by_key(|m| m.meta.time);
+    messages.into_iter().map(|m| m.meta).collect()
 }
 
 #[cfg(test)]
@@ -233,5 +245,22 @@ mod tests {
         assert!(looks_like_id(&format!("{}==", "a".repeat(70))));
         assert!(!looks_like_id("hello world"));
         assert!(!looks_like_id("short"));
+    }
+
+    #[test]
+    fn conversation_metadata_is_oldest_first() {
+        let message = |id: &str, time| Message {
+            meta: MessageMetadata {
+                id: id.into(),
+                time,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let metadata = metadata_oldest_first(vec![message("b", 20), message("a", 10)]);
+
+        let ids: Vec<_> = metadata.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["a", "b"]);
     }
 }

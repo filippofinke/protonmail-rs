@@ -42,6 +42,41 @@ async fn list_messages_builds_query_and_decodes() {
 }
 
 #[tokio::test]
+async fn get_conversation_decodes_message_metadata() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/mail/v4/conversations/c1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "Code": 1000,
+            "Conversation": {"ID": "c1", "NumMessages": 2},
+            "Messages": [
+                {
+                    "ID": "m2", "ConversationID": "c1", "Time": 20, "Flags": 32,
+                    "Sender": {"Address": "a@example.com"}, "LabelIDs": ["0"]
+                },
+                {
+                    "ID": "m1", "ConversationID": "c1", "Time": 10,
+                    "Sender": {"Address": "a@example.com"}, "LabelIDs": ["0", "10"]
+                }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (conversation, messages) =
+        api::conversations::get_conversation(&client(&server.uri()), "c1")
+            .await
+            .unwrap();
+    assert_eq!(conversation.id, "c1");
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].meta.id, "m2");
+    assert_eq!(messages[0].meta.flags, 32);
+    assert_eq!(messages[1].meta.label_ids, ["0", "10"]);
+    assert!(messages[0].body.is_empty());
+}
+
+#[tokio::test]
 async fn trash_posts_label_3() {
     let server = MockServer::start().await;
     Mock::given(method("PUT"))

@@ -5,9 +5,18 @@ pub mod types;
 use crate::error::{Error, Result};
 use crate::session::Tokens;
 use crate::transport::{Doer, HttpClient, Request};
+use futures::future::BoxFuture;
 use proton_srp::{RPGPVerifier, SRPAuth, SRPProofB64, SrpHashVersion};
 use secrecy::{ExposeSecret, SecretString};
+use std::sync::Arc;
 use types::{AuthInfo, AuthResponse, SessionResp};
+
+/// Asks the user for a TOTP code during login.
+///
+/// Called only when the account requires TOTP and no code was supplied up
+/// front, after any human verification, so the code is still fresh. Obtain the
+/// code interactively and do not persist it.
+pub type TotpPrompt = Arc<dyn Fn() -> BoxFuture<'static, Result<String>> + Send + Sync>;
 
 /// Result of a successful login.
 pub struct LoginResult {
@@ -23,6 +32,18 @@ pub async fn login(
     username: &str,
     password: &SecretString,
     totp: Option<&str>,
+) -> Result<LoginResult> {
+    login_with_prompt(http, username, password, totp, None).await
+}
+
+/// Like [`login`], but asks `totp_prompt` for the code when the account
+/// requires TOTP and `totp` is `None`.
+pub async fn login_with_prompt(
+    http: &HttpClient,
+    username: &str,
+    password: &SecretString,
+    totp: Option<&str>,
+    totp_prompt: Option<&TotpPrompt>,
 ) -> Result<LoginResult> {
     tracing::info!(target: "proton_core::auth", username, "login: starting SRP flow");
 
@@ -106,28 +127,8 @@ pub async fn login(
     )
     .await;
 
-    // 6. 2FA if required. TOTP is bit 0; FIDO2/WebAuthn is bit 1.
-    if resp.two_fa.enabled & 1 == 0 && resp.two_fa.enabled & 2 != 0 {
-        return Err(Error::Other(
-            "this account requires a security key (FIDO2/WebAuthn) for 2FA, which is not yet \
-             supported — enable a TOTP authenticator app, or use an app/bridge password"
-                .into(),
-        ));
-    }
-    if resp.two_fa.enabled & 1 != 0 {
-        tracing::debug!(target: "proton_core::auth", "login: 2FA required — submitting TOTP (POST /core/v4/auth/2fa)");
-        let code = totp.ok_or_else(|| {
-            Error::Other("account requires 2FA but no TOTP code was provided".into())
-        })?;
-        let _: serde_json::Value = http
-            .decode(
-                Request::post("/core/v4/auth/2fa")
-                    .json(serde_json::json!({ "TwoFactorCode": code }))
-                    .no_refresh(),
-            )
-            .await?;
-        tracing::debug!(target: "proton_core::auth", "login: 2FA accepted");
-    }
+    // 6. 2FA if required.
+    second_factor(http, resp.two_fa.enabled, totp, totp_prompt).await?;
     tracing::info!(target: "proton_core::auth", "login: complete");
 
     Ok(LoginResult {
@@ -140,6 +141,45 @@ pub async fn login(
     })
 }
 
+/// Submit the second factor if the account requires one. `enabled` is the 2FA
+/// bitmask: TOTP is bit 0; FIDO2/WebAuthn is bit 1.
+async fn second_factor(
+    http: &HttpClient,
+    enabled: u32,
+    totp: Option<&str>,
+    totp_prompt: Option<&TotpPrompt>,
+) -> Result<()> {
+    if enabled & 1 == 0 && enabled & 2 != 0 {
+        return Err(Error::Other(
+            "this account requires a security key (FIDO2/WebAuthn) for 2FA, which is not yet \
+             supported — enable a TOTP authenticator app, or use an app/bridge password"
+                .into(),
+        ));
+    }
+    if enabled & 1 == 0 {
+        return Ok(());
+    }
+    let code = match (totp, totp_prompt) {
+        (Some(code), _) => code.to_string(),
+        (None, Some(prompt)) => prompt().await?,
+        (None, None) => {
+            return Err(Error::Other(
+                "account requires 2FA but no TOTP code was provided".into(),
+            ))
+        }
+    };
+    tracing::debug!(target: "proton_core::auth", "login: 2FA required — submitting TOTP (POST /core/v4/auth/2fa)");
+    let _: serde_json::Value = http
+        .decode(
+            Request::post("/core/v4/auth/2fa")
+                .json(serde_json::json!({ "TwoFactorCode": code }))
+                .no_refresh(),
+        )
+        .await?;
+    tracing::debug!(target: "proton_core::auth", "login: 2FA accepted");
+    Ok(())
+}
+
 /// Revoke the current session server-side.
 pub async fn logout(http: &HttpClient) -> Result<()> {
     let _: serde_json::Value = http.decode(Request::delete("/core/v4/auth")).await?;
@@ -149,7 +189,8 @@ pub async fn logout(http: &HttpClient) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{method, path};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use wiremock::matchers::{body_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
@@ -165,5 +206,82 @@ mod tests {
             .await;
         let http = HttpClient::new(server.uri(), "Other");
         logout(&http).await.unwrap();
+    }
+
+    /// A prompt returning `code` and counting its invocations.
+    fn counting_prompt(code: &'static str) -> (TotpPrompt, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let prompt: TotpPrompt = Arc::new(move || {
+            seen.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move { Ok(code.to_string()) })
+        });
+        (prompt, calls)
+    }
+
+    async fn expect_2fa(server: &MockServer, code: &str, times: u64) {
+        Mock::given(method("POST"))
+            .and(path("/core/v4/auth/2fa"))
+            .and(body_json(serde_json::json!({ "TwoFactorCode": code })))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"Code": 1000})),
+            )
+            .expect(times)
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn second_factor_prefers_supplied_code() {
+        let server = MockServer::start().await;
+        expect_2fa(&server, "123456", 1).await;
+        let http = HttpClient::new(server.uri(), "Other");
+        let (prompt, calls) = counting_prompt("000000");
+        second_factor(&http, 1, Some("123456"), Some(&prompt))
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn second_factor_prompts_when_code_missing() {
+        let server = MockServer::start().await;
+        expect_2fa(&server, "654321", 1).await;
+        let http = HttpClient::new(server.uri(), "Other");
+        let (prompt, calls) = counting_prompt("654321");
+        second_factor(&http, 1, None, Some(&prompt)).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn second_factor_errors_without_code_or_prompt() {
+        let server = MockServer::start().await;
+        expect_2fa(&server, "", 0).await;
+        let http = HttpClient::new(server.uri(), "Other");
+        let err = second_factor(&http, 1, None, None).await.unwrap_err();
+        assert!(err.to_string().contains("no TOTP code"));
+    }
+
+    #[tokio::test]
+    async fn second_factor_rejects_fido2_only_without_prompting() {
+        let server = MockServer::start().await;
+        let http = HttpClient::new(server.uri(), "Other");
+        let (prompt, calls) = counting_prompt("222222");
+        let err = second_factor(&http, 2, None, Some(&prompt))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("FIDO2"));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn second_factor_skipped_when_not_enabled() {
+        let server = MockServer::start().await;
+        let http = HttpClient::new(server.uri(), "Other");
+        let (prompt, calls) = counting_prompt("111111");
+        second_factor(&http, 0, None, Some(&prompt)).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 }

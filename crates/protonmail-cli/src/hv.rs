@@ -16,6 +16,12 @@
 //!
 //! The captcha HV token is sent RAW (no `<challenge>:` prefix — that form is
 //! only for email/sms codes).
+//!
+//! `--captcha-chrome` instead follows Proton's external-browser flow (the one
+//! Proton Bridge's CLI uses): open `verify.proton.me` for the challenge in an
+//! isolated Chrome window; that page registers the solved captcha against the
+//! challenge itself, and once the user presses ENTER the request is retried
+//! with the original challenge token. Nothing is captured from the page.
 
 use proton_core::{Error, HvChallenge, HvResolver, Result};
 use std::future::Future;
@@ -23,12 +29,15 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const HV_TIMEOUT: Duration = Duration::from_secs(300);
 /// Preferred local port (keeps a saved bookmarklet reusable across runs).
 const PREFERRED_PORT: u16 = 47821;
+/// Verification page used when the challenge carries no usable `WebUrl`.
+const DEFAULT_VERIFY_ORIGIN: &str = "https://verify.proton.me";
 
 /// Build the HV resolver.
 /// - `api_base`: API root (used to derive the captcha widget URL).
@@ -59,19 +68,145 @@ async fn solve(
         return Ok((t, "captcha".to_string()));
     }
 
+    if use_chrome {
+        let url = verify_url(&chal);
+        tokio::task::spawn_blocking(move || run_external_flow(&url))
+            .await
+            .map_err(|e| Error::Other(format!("hv task: {e}")))??;
+        // The verify page attached the solved captcha to the challenge, so the
+        // retry echoes the challenge token itself (as Proton Bridge does).
+        return Ok((chal.token, "captcha".to_string()));
+    }
+
     let (endpoint, _origin) = captcha_endpoint(&api_base);
     let captcha_url = format!(
         "{endpoint}?Token={}&ForceWebMessaging=1",
         urlencode(&chal.token)
     );
 
-    tokio::task::spawn_blocking(move || run_manual_flow(&captcha_url, use_chrome))
+    tokio::task::spawn_blocking(move || run_manual_flow(&captcha_url))
         .await
         .map_err(|e| Error::Other(format!("hv task: {e}")))?
 }
 
+/// Proton's standalone verification page for `chal`, restricted to the captcha
+/// method (the only one whose external-browser result the retry can redeem).
+/// Keeps the host of the server-provided `WebUrl` when it is https.
+fn verify_url(chal: &HvChallenge) -> String {
+    let origin = chal
+        .web_url
+        .strip_prefix("https://")
+        .and_then(|rest| rest.split(['/', '?', '#']).next())
+        .filter(|host| !host.is_empty())
+        .map_or_else(
+            || DEFAULT_VERIFY_ORIGIN.to_string(),
+            |host| format!("https://{host}"),
+        );
+    format!("{origin}/?methods=captcha&token={}", urlencode(&chal.token))
+}
+
+/// `--captcha-chrome`: open the verification page in an isolated Chrome window
+/// and wait (bounded) for the user to confirm completion with ENTER.
+fn run_external_flow(url: &str) -> Result<()> {
+    eprintln!("\n── Human verification (CAPTCHA) ──");
+    let mut chrome = match launch_chrome(url, &std::process::id().to_string()) {
+        Ok(c) => {
+            eprintln!("Opened the verification page in an isolated Chrome window.");
+            Some(c)
+        }
+        Err(msg) => {
+            eprintln!("Chrome launch failed ({msg}); opening your default browser instead.");
+            if open_browser(url).is_err() {
+                eprintln!("Could not open a browser. Open this URL manually:\n{url}");
+            }
+            None
+        }
+    };
+    eprintln!(
+        "Solve the CAPTCHA there. When the page says verification is complete, \
+         press ENTER here (waiting up to {} minutes).",
+        HV_TIMEOUT.as_secs() / 60
+    );
+
+    let outcome = wait_for_confirmation(&spawn_enter_reader(), HV_TIMEOUT, || {
+        chrome
+            .as_mut()
+            .is_some_and(|(c, _)| matches!(c.try_wait(), Ok(Some(_))))
+    });
+
+    // Close the isolated Chrome window we opened (if any), then remove its
+    // throwaway profile. Best effort: a leftover only wastes temp space.
+    if let Some((mut c, profile)) = chrome {
+        let _ = c.kill();
+        let _ = c.wait();
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+    if outcome.is_ok() {
+        eprintln!("Verification confirmed — retrying.");
+    }
+    outcome
+}
+
+/// What the stdin reader observed.
+enum Confirm {
+    Enter,
+    Closed,
+}
+
+/// Read one line from stdin on a helper thread. If we time out first, the
+/// thread stays parked on stdin, which is harmless: the login then fails.
+fn spawn_enter_reader() -> mpsc::Receiver<Confirm> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let msg = match std::io::stdin().read_line(&mut line) {
+            Ok(n) if n > 0 => Confirm::Enter,
+            _ => Confirm::Closed,
+        };
+        let _ = tx.send(msg);
+    });
+    rx
+}
+
+/// Wait until the user confirms, stdin closes, or `timeout` elapses. A closed
+/// Chrome window only warns: when another Chrome owns the profile the process
+/// we spawned exits immediately while its window stays open.
+fn wait_for_confirmation(
+    rx: &mpsc::Receiver<Confirm>,
+    timeout: Duration,
+    mut chrome_exited: impl FnMut() -> bool,
+) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    let mut warned = false;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(Error::Other(
+                "human verification timed out waiting for ENTER".into(),
+            ));
+        }
+        match rx.recv_timeout(left.min(Duration::from_millis(500))) {
+            Ok(Confirm::Enter) => return Ok(()),
+            Ok(Confirm::Closed) | Err(RecvTimeoutError::Disconnected) => {
+                return Err(Error::Other(
+                    "human verification aborted: stdin closed before ENTER was pressed".into(),
+                ))
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                if !warned && chrome_exited() {
+                    warned = true;
+                    eprintln!(
+                        "The Chrome window was closed. Press ENTER if verification \
+                         completed, or Ctrl+C to abort."
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Open the captcha top-level, print the capture snippet, wait for the token.
-fn run_manual_flow(captcha_url: &str, use_chrome: bool) -> Result<(String, String)> {
+fn run_manual_flow(captcha_url: &str) -> Result<(String, String)> {
     // Prefer a fixed port so a saved bookmarklet keeps working across runs.
     let listener = TcpListener::bind(("127.0.0.1", PREFERRED_PORT))
         .or_else(|_| TcpListener::bind("127.0.0.1:0"))
@@ -117,23 +252,10 @@ fn run_manual_flow(captcha_url: &str, use_chrome: bool) -> Result<(String, Strin
     let _ = writeln!(e, "\nCaptcha URL: {captcha_url}");
     let _ = e.flush();
 
-    // Only an isolated Chrome we launched is safe to kill afterwards; never the
-    // user's default browser (that would close all their tabs).
-    let mut child: Option<std::process::Child> = None;
-    if use_chrome {
-        match launch_chrome(captcha_url, port) {
-            Ok(c) => child = Some(c),
-            Err(msg) => {
-                let _ = writeln!(e, "(Chrome launch failed: {msg}; using default browser.)");
-                let _ = open_browser(captcha_url);
-            }
-        }
-    } else {
-        let _ = open_browser(captcha_url);
-    }
+    let _ = open_browser(captcha_url);
 
     let deadline = Instant::now() + HV_TIMEOUT;
-    let outcome = loop {
+    loop {
         if Instant::now() >= deadline {
             break Err(Error::Other("human verification timed out".into()));
         }
@@ -151,14 +273,7 @@ fn run_manual_flow(captcha_url: &str, use_chrome: bool) -> Result<(String, Strin
             }
             Err(err) => break Err(Error::Other(format!("hv accept: {err}"))),
         }
-    };
-
-    // Close the isolated Chrome window we opened (if any).
-    if let Some(mut c) = child {
-        let _ = c.kill();
-        let _ = c.wait();
     }
-    outcome
 }
 
 /// The console one-liner the user pastes. On the `pm_captcha` message it
@@ -174,6 +289,9 @@ fn capture_snippet(port: u16) -> String {
 /// Capture the token from `GET /token?value=...`; CORS hides our response from
 /// the page, but the request still reaches us.
 fn handle_conn(stream: &mut std::net::TcpStream) -> Option<String> {
+    // On macOS/BSD the accepted socket inherits the listener's non-blocking
+    // mode; without this a request that arrives after `accept` is dropped.
+    stream.set_nonblocking(false).ok();
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
     let mut buf = [0u8; 8192];
     let n = stream.read(&mut buf).ok()?;
@@ -296,11 +414,20 @@ fn open_browser(url: &str) -> std::io::Result<()> {
     cmd.spawn().map(|_| ())
 }
 
-/// Open the captcha in an isolated Chrome window (throwaway profile). Returns
-/// the child process so it can be closed once verification completes.
-fn launch_chrome(url: &str, port: u16) -> std::result::Result<std::process::Child, String> {
+/// Throwaway Chrome profile used only by protonmail-cli (never a user profile).
+fn chrome_profile_dir(tag: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("protonmail-cli-hv-{tag}"))
+}
+
+/// Open `url` in an isolated Chrome window (throwaway profile named by `tag`).
+/// Returns the child process and its profile dir so both can be cleaned up
+/// once verification completes.
+fn launch_chrome(
+    url: &str,
+    tag: &str,
+) -> std::result::Result<(std::process::Child, PathBuf), String> {
     let chrome = find_chrome().ok_or_else(|| "no Chrome/Chromium binary found".to_string())?;
-    let profile: PathBuf = std::env::temp_dir().join(format!("protonmail-cli-hv-{port}"));
+    let profile = chrome_profile_dir(tag);
     std::process::Command::new(&chrome)
         .arg(format!("--user-data-dir={}", profile.display()))
         .arg("--no-first-run")
@@ -309,6 +436,7 @@ fn launch_chrome(url: &str, port: u16) -> std::result::Result<std::process::Chil
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
+        .map(|child| (child, profile))
         .map_err(|e| format!("spawn {chrome}: {e}"))
 }
 
@@ -431,5 +559,106 @@ mod tests {
 
         let got = handle.join().unwrap();
         assert_eq!(got.as_deref(), Some("raw:token abc"));
+    }
+
+    #[test]
+    fn token_request_arriving_after_accept_is_not_dropped() {
+        // On macOS an accepted socket inherits the listener's non-blocking mode,
+        // so a request line that arrives after `accept` must still be read.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+
+        let client = std::thread::spawn(move || {
+            let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            let _ = c.write_all(b"GET /token?value=synthetic HTTP/1.1\r\nHost: x\r\n\r\n");
+            let mut resp = String::new();
+            let _ = c.read_to_string(&mut resp);
+        });
+
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((s, _)) => break s,
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(e) => panic!("accept: {e}"),
+            }
+        };
+        assert_eq!(handle_conn(&mut stream).as_deref(), Some("synthetic"));
+        drop(stream); // EOF for the client's read_to_string
+        client.join().unwrap();
+    }
+
+    #[test]
+    fn chrome_profile_dir_is_a_dedicated_temp_dir() {
+        let dir = chrome_profile_dir("123");
+        assert_eq!(dir.parent(), Some(std::env::temp_dir().as_path()));
+        assert_eq!(dir.file_name().unwrap(), "protonmail-cli-hv-123");
+    }
+
+    fn chal(token: &str, web_url: &str) -> HvChallenge {
+        HvChallenge {
+            token: token.into(),
+            methods: vec!["captcha".into(), "email".into()],
+            web_url: web_url.into(),
+        }
+    }
+
+    #[test]
+    fn verify_url_keeps_web_url_host_and_forces_captcha() {
+        let c = chal(
+            "chal/1 x",
+            "https://verify.proton.me/?methods=captcha,email&token=other",
+        );
+        assert_eq!(
+            verify_url(&c),
+            "https://verify.proton.me/?methods=captcha&token=chal%2F1%20x"
+        );
+    }
+
+    #[test]
+    fn verify_url_falls_back_for_missing_or_insecure_web_url() {
+        let expected = "https://verify.proton.me/?methods=captcha&token=t";
+        assert_eq!(verify_url(&chal("t", "")), expected);
+        assert_eq!(
+            verify_url(&chal("t", "http://attacker.example/?token=t")),
+            expected
+        );
+    }
+
+    #[test]
+    fn confirmation_succeeds_on_enter() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(Confirm::Enter).unwrap();
+        assert!(wait_for_confirmation(&rx, Duration::from_secs(5), || false).is_ok());
+    }
+
+    #[test]
+    fn confirmation_aborts_when_stdin_closes() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(Confirm::Closed).unwrap();
+        let err = wait_for_confirmation(&rx, Duration::from_secs(5), || false).unwrap_err();
+        assert!(err.to_string().contains("stdin closed"));
+
+        let (tx, rx) = mpsc::channel::<Confirm>();
+        drop(tx);
+        assert!(wait_for_confirmation(&rx, Duration::from_secs(5), || false).is_err());
+    }
+
+    #[test]
+    fn confirmation_times_out_and_closed_chrome_only_warns() {
+        let (_tx, rx) = mpsc::channel::<Confirm>();
+        let mut polls = 0;
+        let started = Instant::now();
+        let err = wait_for_confirmation(&rx, Duration::from_millis(50), || {
+            polls += 1;
+            true
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("timed out"));
+        assert_eq!(polls, 1, "Chrome exit is checked, and warned about, once");
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 }
