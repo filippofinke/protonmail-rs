@@ -2999,7 +2999,7 @@ dependencies = [
 
 [[package]]
 name = "proton-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "ammonia",
  "async-trait",
@@ -3046,7 +3046,7 @@ dependencies = [
 
 [[package]]
 name = "proton-mcp"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -3102,7 +3102,7 @@ dependencies = [
 
 [[package]]
 name = "protonmail-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "clap",
