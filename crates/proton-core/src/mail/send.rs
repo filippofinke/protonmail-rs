@@ -106,6 +106,43 @@ impl Client {
 
     /// Reply to a message.
     pub async fn reply(&self, reference: &str, all: bool, opts: &SendOptions) -> Result<String> {
+        let (o, parent_id, action) = self.prepare_reply(reference, all, opts).await?;
+        self.send_with_parent(
+            &o,
+            Some(&parent_id),
+            Some(action),
+            &(String::new(), Vec::new()),
+            None,
+        )
+        .await
+    }
+
+    /// Save a reply as a draft threaded under the original (via `ParentID` /
+    /// `Action`) without sending it. Returns the draft id.
+    pub async fn save_reply_draft(
+        &self,
+        reference: &str,
+        all: bool,
+        opts: &SendOptions,
+    ) -> Result<String> {
+        let (o, parent_id, action) = self.prepare_reply(reference, all, opts).await?;
+        tracing::info!(target: "proton_core::mail", parent_id = %parent_id, action, "save_reply_draft");
+        let mut body = self.draft_message_json(&o)?;
+        body["ParentID"] = json!(parent_id);
+        body["Action"] = json!(action);
+        let created = api::messages::create_draft(self.http(), body).await?;
+        Ok(created.meta.id)
+    }
+
+    /// Resolve the parent and compute reply recipients, subject and quoted
+    /// body. Returns the prepared options, the parent id and the draft
+    /// `Action` (0 = reply, 1 = reply all).
+    async fn prepare_reply(
+        &self,
+        reference: &str,
+        all: bool,
+        opts: &SendOptions,
+    ) -> Result<(SendOptions, String, u8)> {
         let parent_id = self.resolve_ref(reference).await?;
         let parent = api::messages::get_message(self.http(), &parent_id).await?;
         let quoted = self.read_message(&parent_id).await.ok();
@@ -139,14 +176,7 @@ impl Client {
         if let Some(q) = quoted {
             o.body = format!("{}\n\n{}", o.body, quote_block(&parent, &q.body, o.html));
         }
-        self.send_with_parent(
-            &o,
-            Some(&parent_id),
-            Some(0),
-            &(String::new(), Vec::new()),
-            None,
-        )
-        .await
+        Ok((o, parent_id, if all { 1 } else { 0 }))
     }
 
     /// Forward a message (carries the original's attachments).
