@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/filippofinke/protonmail-rs/compare/v0.1.1...v0.1.2) - 2026-09-30
+
+### Added
+
+- save threaded reply drafts via reply_message draft_only ([#4](https://github.com/filippofinke/protonmail-rs/pull/4))
+
 ## [0.1.1](https://github.com/filippofinke/protonmail-rs/compare/v0.1.0...v0.1.1) - 2026-07-01
 
 ### Other
