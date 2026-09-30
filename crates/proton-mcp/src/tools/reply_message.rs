@@ -23,6 +23,9 @@ pub struct ReplyMessageParams {
     pub body: String,
     /// Treat the body as HTML. Defaults to false.
     pub html: Option<bool>,
+    /// Save the reply as a draft in the original conversation instead of
+    /// sending it. Defaults to false.
+    pub draft_only: Option<bool>,
     /// Confirm the (destructive) send. Without it (and without --allow-writes) a preview is returned.
     pub confirm: Option<bool>,
 }
@@ -31,19 +34,21 @@ pub struct ReplyMessageParams {
 impl ProtonMail {
     #[tool(
         name = "reply_message",
-        description = "Reply to a message. Destructive: returns a dry-run preview unless confirm=true or --allow-writes is set."
+        description = "Reply to a message. With draft_only=true the reply is saved as a draft in the same conversation (ParentID/Action set) instead of being sent. Destructive: returns a dry-run preview unless confirm=true or --allow-writes is set."
     )]
     pub async fn reply_message(
         &self,
         Parameters(p): Parameters<ReplyMessageParams>,
     ) -> Result<Out, ErrorData> {
         let all = p.all.unwrap_or(false);
+        let draft_only = p.draft_only.unwrap_or(false);
         if !should_perform(self.state.allow_writes, p.confirm) {
             return Ok(dry_run(
                 "reply_message",
                 json!({
                     "reference": p.reference,
                     "all": all,
+                    "draft_only": draft_only,
                     "from": p.from,
                     "body_excerpt": excerpt(&p.body, 280),
                 }),
@@ -62,6 +67,15 @@ impl ProtonMail {
         let client = guard.as_ref().expect("client present");
 
         let reference = self.resolve(client, &p.reference).await?;
+        if draft_only {
+            let id = client
+                .save_reply_draft(&reference, all, &opts)
+                .await
+                .map_err(|e| self.map_err(e))?;
+            return Ok(obj(
+                json!({ "saved": true, "id": id, "parent_id": reference }),
+            ));
+        }
         let id = client
             .reply(&reference, all, &opts)
             .await

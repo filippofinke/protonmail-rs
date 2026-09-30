@@ -9,7 +9,7 @@ use crate::model::message::MessageMetadata;
 use serde_json::json;
 
 impl Client {
-    fn draft_message_json(&self, opts: &SendOptions) -> Result<serde_json::Value> {
+    pub(crate) fn draft_message_json(&self, opts: &SendOptions) -> Result<serde_json::Value> {
         let addr = match &opts.from {
             Some(e) => self.keys().address_for_email(e),
             None => self.keys().primary_address(),
