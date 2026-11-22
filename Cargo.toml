@@ -4,7 +4,7 @@ members = ["crates/proton-core", "crates/protonmail-cli", "crates/proton-mcp"]
 
 [workspace.package]
 edition = "2021"
-version = "0.1.2"
+version = "0.2.0"
 license = "MIT"
 authors = ["Filippo Finke <filippofinke@protonmail.ch>"]
 rust-version = "1.96"
