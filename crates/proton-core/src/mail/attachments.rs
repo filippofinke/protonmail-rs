@@ -4,7 +4,7 @@ use super::Client;
 use crate::api;
 use crate::crypto;
 use crate::error::{Error, Result};
-use crate::model::message::Attachment;
+use crate::model::message::{Attachment, Message};
 
 impl Client {
     /// List a message's attachments (inline filtered unless `include_inline`).
@@ -35,6 +35,21 @@ impl Client {
             .ok_or_else(|| Error::NotFound {
                 kind: "attachment".into(),
             })?;
+        let plain = self.fetch_attachment(&msg, att).await?;
+        Ok((att.name.clone(), plain))
+    }
+
+    /// Download + decrypt one attachment of an already-fetched message.
+    pub(crate) async fn fetch_attachment(
+        &self,
+        msg: &Message,
+        att: &Attachment,
+    ) -> Result<Vec<u8>> {
+        if att.id.is_empty() {
+            return Err(Error::NotFound {
+                kind: "attachment id".into(),
+            });
+        }
         let key_packets = att
             .key_packets
             .as_deref()
@@ -45,10 +60,9 @@ impl Client {
             .or_else(|| self.keys().primary_address())
             .ok_or_else(|| Error::Crypto("no address key for attachment".into()))?;
 
-        let data_packet = api::attachments::get_attachment(self.http(), attachment_id).await?;
+        let data_packet = api::attachments::get_attachment(self.http(), &att.id).await?;
         let provider = crypto::provider();
-        let plain = crypto::decrypt_attachment(&provider, addr, key_packets, &data_packet)?;
-        Ok((att.name.clone(), plain))
+        crypto::decrypt_attachment(&provider, addr, key_packets, &data_packet)
     }
 
     /// Download all (non-inline) attachments of a message.

@@ -175,15 +175,12 @@ pub enum Command {
         #[arg(long)]
         conversations: bool,
     },
-    /// Export messages from a folder to `.eml` files.
+    /// Export messages to `.eml` files (full MIME, attachments included).
+    ///
+    /// Select messages by folder + search filters, or by explicit IDs.
     Export {
-        #[arg(long, default_value = "all")]
-        folder: String,
-        /// Output directory.
-        #[arg(long)]
-        out: PathBuf,
-        #[arg(long, default_value_t = 100)]
-        max: u32,
+        #[command(flatten)]
+        args: ExportArgs,
     },
     /// Continuously sync the cache (event stream) until interrupted.
     Watch {
@@ -256,6 +253,56 @@ pub struct SearchArgs {
     /// Maximum number of results.
     #[arg(long)]
     pub limit: Option<u32>,
+}
+
+/// Options for `export`.
+#[derive(Debug, Args)]
+pub struct ExportArgs {
+    /// Output directory.
+    #[arg(long)]
+    pub out: PathBuf,
+    /// Folder/label to export from (ignored with --ids/--ids-file).
+    #[arg(long, default_value = "all")]
+    pub folder: String,
+    /// Maximum number of messages (ignored with --ids/--ids-file).
+    #[arg(long, default_value_t = 100)]
+    pub max: u32,
+    /// Only messages matching this keyword.
+    #[arg(long)]
+    pub keyword: Option<String>,
+    /// Only messages from this sender.
+    #[arg(long)]
+    pub from: Option<String>,
+    /// Only messages to this recipient.
+    #[arg(long)]
+    pub to: Option<String>,
+    /// Only messages whose subject matches.
+    #[arg(long)]
+    pub subject: Option<String>,
+    /// Only messages on/after this date (YYYY-MM-DD).
+    #[arg(long)]
+    pub after: Option<String>,
+    /// Only messages on/before this date (YYYY-MM-DD).
+    #[arg(long)]
+    pub before: Option<String>,
+    /// Only unread messages.
+    #[arg(long)]
+    pub unread: bool,
+    /// Export exactly these message IDs (repeatable or comma-separated).
+    #[arg(long, value_delimiter = ',', conflicts_with_all = ["keyword", "from", "to", "subject", "after", "before", "unread"])]
+    pub ids: Vec<String>,
+    /// Read message IDs from a file, one per line (`-` for stdin).
+    #[arg(long = "ids-file", conflicts_with_all = ["keyword", "from", "to", "subject", "after", "before", "unread"])]
+    pub ids_file: Option<PathBuf>,
+    /// Messages fetched + decrypted in parallel.
+    #[arg(long, default_value_t = 4)]
+    pub concurrency: usize,
+    /// Skip messages whose `.eml` already exists in --out (resume).
+    #[arg(long = "skip-existing")]
+    pub skip_existing: bool,
+    /// Do not download attachments (headers + body only).
+    #[arg(long = "no-attachments")]
+    pub no_attachments: bool,
 }
 
 /// Compose options shared by `send`.

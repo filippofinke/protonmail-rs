@@ -37,7 +37,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
         Command::Addresses { cmd } => commands::contacts::addresses(&ctx, cmd).await,
         Command::Settings { cmd } => commands::contacts::settings(&ctx, cmd).await,
         Command::Counts { conversations } => commands::contacts::counts(&ctx, conversations).await,
-        Command::Export { folder, out, max } => commands::export::run(&ctx, folder, out, max).await,
+        Command::Export { args } => commands::export::run(&ctx, args).await,
         Command::Watch { interval, folder } => commands::watch::run(&ctx, interval, folder).await,
         Command::Index {
             folder,

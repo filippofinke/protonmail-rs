@@ -174,7 +174,11 @@ impl Client {
         }
         o.subject = with_prefix(&parent.meta.subject, "Re: ");
         if let Some(q) = quoted {
-            o.body = format!("{}\n\n{}", o.body, quote_block(&parent, &q.body, o.html));
+            o.body = format!(
+                "{}\n\n{}",
+                o.body,
+                quote_block(&parent, &q.body, &q.mime_type, o.html)
+            );
         }
         Ok((o, parent_id, if all { 1 } else { 0 }))
     }
@@ -188,7 +192,11 @@ impl Client {
         let mut o = opts.clone();
         o.subject = with_prefix(&parent.meta.subject, "Fw: ");
         if let Some(q) = quoted {
-            o.body = format!("{}\n\n{}", o.body, quote_block(&parent, &q.body, o.html));
+            o.body = format!(
+                "{}\n\n{}",
+                o.body,
+                quote_block(&parent, &q.body, &q.mime_type, o.html)
+            );
         }
         let inherited: Vec<(String, String)> = parent
             .attachments
@@ -515,7 +523,15 @@ fn with_prefix(subject: &str, prefix: &str) -> String {
     }
 }
 
-fn quote_block(parent: &crate::model::message::Message, body: &str, html: bool) -> String {
+/// Quote the parent body in the reply's format: an HTML parent is flattened to
+/// text for a plain reply, and a plain parent is escaped for an HTML reply.
+fn quote_block(
+    parent: &crate::model::message::Message,
+    body: &str,
+    body_mime: &str,
+    html: bool,
+) -> String {
+    let parent_html = body_mime.eq_ignore_ascii_case("text/html");
     let who = if parent.meta.sender.name.is_empty() {
         parent.meta.sender.address.clone()
     } else {
@@ -525,10 +541,23 @@ fn quote_block(parent: &crate::model::message::Message, body: &str, html: bool) 
         )
     };
     if html {
+        let who = crate::html::escape(&who);
+        let body = if parent_html {
+            body.to_string()
+        } else {
+            crate::html::escape(body).replace('\n', "<br>")
+        };
         format!(
             "<div class=\"protonmail_quote\">On {who} wrote:<blockquote class=\"protonmail_quote\" type=\"cite\">{body}</blockquote></div>"
         )
     } else {
+        let text;
+        let body = if parent_html {
+            text = crate::html::to_text(body);
+            &text
+        } else {
+            body
+        };
         let quoted: String = body.lines().map(|l| format!("> {l}\n")).collect();
         format!("------- Original Message -------\nOn {who} wrote:\n{quoted}")
     }
@@ -551,6 +580,26 @@ mod tests {
         assert_eq!(with_prefix("Hello", "Re: "), "Re: Hello");
         assert_eq!(with_prefix("Re: Hello", "Re: "), "Re: Hello");
         assert_eq!(with_prefix("RE: Hello", "Re: "), "RE: Hello");
+    }
+
+    #[test]
+    fn quote_converts_between_formats() {
+        let mut parent = crate::model::message::Message::default();
+        parent.meta.sender = crate::model::message::Recipient::new("a@x.com");
+        parent.meta.sender.name = "Alice".into();
+        let q = quote_block(
+            &parent,
+            "<div>Hi&nbsp;there</div><div>bye</div>",
+            "text/html",
+            false,
+        );
+        assert!(q.contains("> Hi there\n> bye"), "{q}");
+        assert!(!q.contains("<div>"));
+        let q = quote_block(&parent, "a < b\nline2", "text/plain", true);
+        assert!(q.contains("a &lt; b<br>line2"), "{q}");
+        assert!(q.contains("Alice &lt;a@x.com&gt;"), "{q}");
+        let q = quote_block(&parent, "<b>x</b>", "text/html", true);
+        assert!(q.contains("<b>x</b>"));
     }
 
     #[test]

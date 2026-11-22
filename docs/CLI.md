@@ -26,7 +26,7 @@ Commands:
   addresses      Address operations
   settings       Mail settings (read + a few toggles)
   counts         Per-folder message (or conversation) counts
-  export         Export messages from a folder to `.eml` files
+  export         Export messages to `.eml` files (full MIME, attachments included)
   watch          Continuously sync the cache (event stream) until interrupted
   index          Build the local encrypted-search index (decrypts + indexes message bodies)
   search         Full-text search the local index (message bodies; private + offline)
@@ -204,41 +204,109 @@ Options:
 ## protonmail-cli export
 
 ```text
-Export messages from a folder to `.eml` files
+Export messages to `.eml` files (full MIME, attachments included).
+
+Select messages by folder + search filters, or by explicit IDs.
 
 Usage: protonmail-cli export [OPTIONS] --out <OUT>
 
 Options:
-      --folder <FOLDER>
-          [default: all]
-      --profile <PROFILE>
-          Session profile to use (separates stored credentials) [default: default]
-      --json
-          Emit machine-readable JSON instead of human-readable text
       --out <OUT>
           Output directory
+
+      --profile <PROFILE>
+          Session profile to use (separates stored credentials)
+          
+          [default: default]
+
+      --folder <FOLDER>
+          Folder/label to export from (ignored with --ids/--ids-file)
+          
+          [default: all]
+
+      --json
+          Emit machine-readable JSON instead of human-readable text
+
       --max <MAX>
+          Maximum number of messages (ignored with --ids/--ids-file)
+          
           [default: 100]
+
   -v, --verbose...
           Verbose logging to stderr (-v debug, -vv trace core, -vvv trace all). `RUST_LOG` overrides. Logs steps of login, crypto, and every HTTP call
+
       --api-url <API_URL>
           Override the API base URL (login only)
+
+      --keyword <KEYWORD>
+          Only messages matching this keyword
+
       --app-version <APP_VERSION>
           Override the app-version header (login only)
+
+      --from <FROM>
+          Only messages from this sender
+
+      --to <TO>
+          Only messages to this recipient
+
       --totp <TOTP>
-          TOTP two-factor code [env: PROTON_TOTP=]
+          TOTP two-factor code
+          
+          [env: PROTON_TOTP=]
+
       --mailbox-password <MAILBOX_PASSWORD>
-          Separate mailbox password (two-password accounts) [env: PROTON_MAILBOX_PASSWORD=]
+          Separate mailbox password (two-password accounts)
+          
+          [env: PROTON_MAILBOX_PASSWORD=]
+
+      --subject <SUBJECT>
+          Only messages whose subject matches
+
+      --after <AFTER>
+          Only messages on/after this date (YYYY-MM-DD)
+
       --captcha-token <CAPTCHA_TOKEN>
-          Pre-solved human-verification (CAPTCHA) token, skips the interactive flow [env: PROTON_HV_TOKEN=]
+          Pre-solved human-verification (CAPTCHA) token, skips the interactive flow
+          
+          [env: PROTON_HV_TOKEN=]
+
+      --before <BEFORE>
+          Only messages on/before this date (YYYY-MM-DD)
+
       --client <CLIENT>
-          Present as an official client (sets app-version + User-Agent unless overridden) [possible values: web, ios, android]
+          Present as an official client (sets app-version + User-Agent unless overridden)
+          
+          [possible values: web, ios, android]
+
+      --unread
+          Only unread messages
+
       --user-agent <USER_AGENT>
           Override the User-Agent header (login only)
+
       --captcha-chrome
           Open the CAPTCHA in an isolated Chrome window (throwaway profile) instead of your default browser; it is closed automatically once verified
+
+      --ids <IDS>
+          Export exactly these message IDs (repeatable or comma-separated)
+
+      --ids-file <IDS_FILE>
+          Read message IDs from a file, one per line (`-` for stdin)
+
+      --concurrency <CONCURRENCY>
+          Messages fetched + decrypted in parallel
+          
+          [default: 4]
+
+      --skip-existing
+          Skip messages whose `.eml` already exists in --out (resume)
+
+      --no-attachments
+          Do not download attachments (headers + body only)
+
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 ```
 
 ## protonmail-cli watch
