@@ -46,6 +46,33 @@ pub struct SearchOpts {
     pub limit: Option<u32>,
 }
 
+/// Largest `PageSize` the Proton list endpoints accept (bigger → HTTP 400).
+pub(crate) const MAX_PAGE_SIZE: u32 = 150;
+
+/// Fetch pages of `base` (whose `page_size` is already clamped) until `limit`
+/// items are collected or a short page signals the end of the listing.
+async fn paginate<T, F, Fut>(base: &ListQuery, limit: usize, mut fetch: F) -> Result<Vec<T>>
+where
+    F: FnMut(ListQuery) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<T>>>,
+{
+    let page_size = base.page_size.unwrap_or(MAX_PAGE_SIZE).max(1) as usize;
+    let mut out = Vec::new();
+    let mut page = 0u32;
+    while out.len() < limit {
+        let mut q = base.clone();
+        q.page = Some(page);
+        let items = fetch(q).await?;
+        let n = items.len();
+        out.extend(items.into_iter().take(limit - out.len()));
+        if n < page_size {
+            break;
+        }
+        page += 1;
+    }
+    Ok(out)
+}
+
 fn parse_date(s: &str) -> Option<i64> {
     let d = chrono::NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok()?;
     Some(d.and_hms_opt(0, 0, 0)?.and_utc().timestamp())
@@ -109,7 +136,7 @@ impl Client {
     fn search_query(&self, opts: &SearchOpts) -> ListQuery {
         ListQuery {
             label_id: Some(resolve_folder(opts.folder.as_deref().unwrap_or("all"))),
-            page_size: Some(opts.limit.unwrap_or(25)),
+            page_size: Some(opts.limit.unwrap_or(25).min(MAX_PAGE_SIZE)),
             unread: opts.unread,
             keyword: opts.keyword.clone(),
             from: opts.from.clone(),
@@ -122,17 +149,29 @@ impl Client {
     }
 
     /// Search messages server-side using the given criteria.
+    ///
+    /// `limit` may exceed the API's maximum page size: results are fetched
+    /// page by page until `limit` is reached or the listing is exhausted.
     pub async fn search_messages(&self, opts: &SearchOpts) -> Result<Vec<MessageMetadata>> {
-        let q = self.search_query(opts);
-        Ok(api::messages::list_messages(self.http(), &q).await?.1)
+        let base = self.search_query(opts);
+        let limit = opts.limit.unwrap_or(25) as usize;
+        paginate(&base, limit, |q| async move {
+            Ok(api::messages::list_messages(self.http(), &q).await?.1)
+        })
+        .await
     }
 
-    /// Search conversations server-side using the given criteria.
+    /// Search conversations server-side using the given criteria (paginated
+    /// internally like [`Client::search_messages`]).
     pub async fn search_conversations(&self, opts: &SearchOpts) -> Result<Vec<Conversation>> {
-        let q = self.search_query(opts);
-        Ok(api::conversations::list_conversations(self.http(), &q)
-            .await?
-            .1)
+        let base = self.search_query(opts);
+        let limit = opts.limit.unwrap_or(25) as usize;
+        paginate(&base, limit, |q| async move {
+            Ok(api::conversations::list_conversations(self.http(), &q)
+                .await?
+                .1)
+        })
+        .await
     }
 
     /// Resolve a free-text reference to a message ID (exact ID, or unique search hit).
@@ -157,7 +196,9 @@ impl Client {
         }
     }
 
-    async fn decrypt_message(&self, m: &Message) -> Result<FullMessage> {
+    /// Decrypt a message body exactly as stored (no MIME extraction, no HTML
+    /// sanitizing). For `multipart/*` messages this is a full MIME entity.
+    pub(crate) async fn decrypt_raw_body(&self, m: &Message) -> Result<(String, Verdict)> {
         let provider = crypto::provider();
         let addr = self
             .keys()
@@ -165,7 +206,11 @@ impl Client {
             .or_else(|| self.keys().primary_address())
             .ok_or_else(|| Error::Crypto("no address key for message".into()))?;
         let sender_pubs = self.sender_pubkeys(&m.meta.sender.address).await;
-        let (body, verdict) = crypto::decrypt_body(&provider, addr, &sender_pubs, &m.body)?;
+        crypto::decrypt_body(&provider, addr, &sender_pubs, &m.body)
+    }
+
+    async fn decrypt_message(&self, m: &Message) -> Result<FullMessage> {
+        let (body, verdict) = self.decrypt_raw_body(m).await?;
         let (body, mime_type) = if m.mime_type.starts_with("multipart/") {
             extract_mime(&body)
         } else {
@@ -221,6 +266,24 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn paginate_spans_pages_and_stops() {
+        let base = ListQuery {
+            page_size: Some(2),
+            ..Default::default()
+        };
+        // 5 items total across pages of 2.
+        let fetch = |q: ListQuery| async move {
+            let p = q.page.unwrap() as usize;
+            Ok((p * 2..(p * 2 + 2).min(5)).collect::<Vec<usize>>())
+        };
+        assert_eq!(
+            paginate(&base, 10, fetch).await.unwrap(),
+            vec![0, 1, 2, 3, 4]
+        );
+        assert_eq!(paginate(&base, 3, fetch).await.unwrap(), vec![0, 1, 2]);
+    }
 
     #[test]
     fn date_parsing() {

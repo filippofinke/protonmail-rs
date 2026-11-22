@@ -36,8 +36,9 @@ impl Recipient {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct Attachment {
-    /// Attachment ID.
-    #[serde(default)]
+    /// Attachment ID. The API sends `ID` (like every other Proton object id);
+    /// `Id` is accepted for backward compatibility with older cached JSON.
+    #[serde(rename = "ID", alias = "Id", default)]
     pub id: String,
     /// File name.
     #[serde(default)]
@@ -57,12 +58,35 @@ pub struct Attachment {
     /// Detached signature over the attachment, if present.
     #[serde(default)]
     pub signature: Option<String>,
+    /// Attachment MIME headers (e.g. `content-id` for inline images).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headers: Option<serde_json::Value>,
 }
 
 impl Attachment {
     /// True if the attachment is inline (disposition `inline`) rather than a download.
     pub fn is_inline(&self) -> bool {
         self.disposition.as_deref() == Some("inline")
+    }
+
+    /// The `Content-ID` of an inline attachment (without angle brackets), if any.
+    pub fn content_id(&self) -> Option<String> {
+        let h = self.headers.as_ref()?.as_object()?;
+        let v = h
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-id"))
+            .map(|(_, v)| v)?;
+        let s = match v {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Array(a) => a.first()?.as_str()?.to_string(),
+            _ => return None,
+        };
+        let s = s
+            .trim()
+            .trim_start_matches('<')
+            .trim_end_matches('>')
+            .to_string();
+        (!s.is_empty()).then_some(s)
     }
 }
 
@@ -184,5 +208,19 @@ mod tests {
         assert_eq!(m.meta.to_list.len(), 1);
         assert_eq!(m.attachments.len(), 1);
         assert_eq!(m.attachments[0].key_packets.as_deref(), Some("KP"));
+        assert_eq!(m.attachments[0].id, "att1");
+    }
+
+    #[test]
+    fn attachment_id_roundtrips_and_accepts_legacy_key() {
+        let a: Attachment = serde_json::from_value(serde_json::json!({"Id": "old"})).unwrap();
+        assert_eq!(a.id, "old");
+        let a: Attachment = serde_json::from_value(serde_json::json!({
+            "ID": "new", "Headers": {"content-id": "<img1@x>"}
+        }))
+        .unwrap();
+        assert_eq!(a.id, "new");
+        assert_eq!(a.content_id().as_deref(), Some("img1@x"));
+        assert_eq!(serde_json::to_value(&a).unwrap()["ID"], "new");
     }
 }

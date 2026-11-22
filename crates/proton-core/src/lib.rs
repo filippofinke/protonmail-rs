@@ -75,6 +75,7 @@ pub use api::filters::Filter;
 pub use crypto::Verdict;
 pub use error::{ApiError, Error, HvChallenge, Result};
 pub use mail::contacts::AddressInfo;
+pub use mail::export::{ExportOptions, ExportReport};
 pub use mail::read::{FullMessage, SearchOpts};
 pub use mail::send::SendOptions;
 pub use mail::sync::SyncReport;

@@ -117,7 +117,7 @@ contacts       list | emails [--email]
 addresses      list | update <ID> [--display-name --signature]
 settings       get | sign <on|off> | attach-public-key <on|off>
 counts         [--conversations]
-export         --out <dir> [--folder all] [--max 100]                # write messages to .eml files
+export         --out <dir> [--folder all] [--max 100] [--from/--to/--keyword/--after/--before] [--ids a,b | --ids-file f] [--skip-existing]  # .eml files with attachments
 watch          [--interval 30] [--folder <f>]                        # continuous cache sync until ^C
 sync           [--backfill <folder>]                                 # one-shot event-stream sync
 index          [--folder all] [--max-pages --page-size]              # build local encrypted FTS index
